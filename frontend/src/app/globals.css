@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
+
+@layer base {
+  * {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-tuft-bg text-tuft-text font-sans;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-tuft-border rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-tuft-border-active;
+  }
+}
+
+@layer components {
+  .tuft-panel {
+    @apply bg-tuft-surface border border-tuft-border rounded-lg;
+  }
+
+  .tuft-input {
+    @apply bg-tuft-bg border border-tuft-border rounded px-3 py-2 text-sm text-tuft-text
+           placeholder:text-tuft-text-dim
+           focus:outline-none focus:border-tuft-border-active focus:ring-1 focus:ring-tuft-border-active
+           transition-colors;
+  }
+
+  .tuft-btn {
+    @apply px-4 py-2 rounded text-sm font-medium transition-all duration-150
+           focus:outline-none focus:ring-2 focus:ring-tuft-accent/30;
+  }
+
+  .tuft-btn-primary {
+    @apply tuft-btn bg-tuft-accent text-tuft-bg hover:bg-tuft-accent-muted active:scale-[0.98];
+  }
+
+  .tuft-btn-ghost {
+    @apply tuft-btn text-tuft-text-muted hover:text-tuft-text hover:bg-tuft-surface-raised;
+  }
+
+  .tuft-label {
+    @apply text-xs font-mono uppercase tracking-wider text-tuft-text-muted;
+  }
+
+  .tuft-slider {
+    @apply w-full h-2 bg-tuft-border rounded-full appearance-none cursor-pointer
+           [&::-webkit-slider-thumb]:appearance-none
+           [&::-webkit-slider-thumb]:w-5
+           [&::-webkit-slider-thumb]:h-5
+           [&::-webkit-slider-thumb]:rounded-full
+           [&::-webkit-slider-thumb]:bg-tuft-accent
+           [&::-webkit-slider-thumb]:shadow-[0_0_0_2px_#0A0A0A]
+           [&::-webkit-slider-thumb]:cursor-pointer
+           [&::-webkit-slider-thumb]:transition-transform
+           [&::-webkit-slider-thumb]:hover:scale-110
+           [&::-webkit-slider-thumb]:active:scale-125;
+  }
+}
