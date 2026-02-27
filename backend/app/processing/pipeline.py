@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 from PIL import Image
 from sklearn.cluster import KMeans
+from skimage.segmentation import slic
 
 from app.models.schemas import (
     ProcessRequest,
@@ -48,18 +49,21 @@ def process_image(request: ProcessRequest) -> ProcessResponse:
     # 3. Pre-quantization smoothing
     img_smoothed = pre_quantization_smooth(img_rgb)
 
+    # 3b. SLIC superpixel segmentation (edge-aware spatial grouping)
+    segments, seg_colors_lab, seg_sizes = compute_superpixels(img_smoothed)
+
     # 4. Quantize colors — two modes
     color_names: list[str] = []
 
     if request.useYarnPalette:
-        # Yarn palette mode: map to real yarn colors, pick top N
         quantized, palette_rgb, labels, color_names = quantize_to_yarn_palette(
-            img_smoothed, n_colors=request.paletteSize
+            img_smoothed, n_colors=request.paletteSize,
+            segments=segments, seg_colors_lab=seg_colors_lab, seg_sizes=seg_sizes
         )
     else:
-        # Free mode: K-Means finds arbitrary colors
         quantized, palette_rgb, labels = quantize_colors(
-            img_smoothed, n_colors=request.paletteSize
+            img_smoothed, n_colors=request.paletteSize,
+            segments=segments, seg_colors_lab=seg_colors_lab, seg_sizes=seg_sizes
         )
 
     # 5. Multi-pass cleanup
@@ -174,49 +178,117 @@ def pre_quantization_smooth(img_rgb: np.ndarray) -> np.ndarray:
 
 
 # ──────────────────────────────────────────────
+# Step 3b: SLIC Superpixel Segmentation
+# ──────────────────────────────────────────────
+
+def compute_superpixels(
+    img_rgb: np.ndarray, n_segments: int = 1500, compactness: float = 15.0
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute SLIC superpixels — groups nearby pixels with similar colors
+    into coherent patches that respect edges.
+
+    Returns:
+        segments: 2D array (h, w) of superpixel labels (0..N-1)
+        seg_colors_lab: (N, 3) mean LAB color per superpixel
+        seg_sizes: (N,) pixel count per superpixel
+    """
+    # SLIC works in LAB internally, but we pass RGB and let it convert
+    segments = slic(
+        img_rgb,
+        n_segments=n_segments,
+        compactness=compactness,
+        start_label=0,
+        channel_axis=2,
+    )
+
+    n_segs = segments.max() + 1
+
+    # Compute mean LAB color per superpixel
+    img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    flat_lab = img_lab.reshape(-1, 3)
+    flat_segs = segments.ravel()
+
+    seg_colors_lab = np.zeros((n_segs, 3), dtype=np.float32)
+    seg_sizes = np.zeros(n_segs, dtype=np.int64)
+
+    # Accumulate per-segment
+    np.add.at(seg_colors_lab, flat_segs, flat_lab)
+    np.add.at(seg_sizes, flat_segs, 1)
+
+    # Average
+    nonzero = seg_sizes > 0
+    seg_colors_lab[nonzero] /= seg_sizes[nonzero, np.newaxis]
+
+    return segments, seg_colors_lab, seg_sizes
+
+
+# ──────────────────────────────────────────────
 # Step 4: Color Quantization (K-Means in LAB)
 # ──────────────────────────────────────────────
 
 def quantize_colors(
-    img_rgb: np.ndarray, n_colors: int = 8
+    img_rgb: np.ndarray, n_colors: int = 8,
+    segments: np.ndarray = None, seg_colors_lab: np.ndarray = None,
+    seg_sizes: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Quantize to n_colors using K-Means in LAB color space.
-    Subsamples for fitting speed, predicts on all pixels.
+    When superpixels are provided, clusters superpixel averages (weighted by size)
+    instead of raw pixels — produces much cleaner, spatially coherent regions.
     """
     h, w = img_rgb.shape[:2]
 
-    # Convert to LAB for perceptually uniform clustering
-    img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-    pixels_lab = img_lab.reshape(-1, 3)
+    if segments is not None and seg_colors_lab is not None and seg_sizes is not None:
+        # Cluster superpixel average colors (weighted by area)
+        kmeans = KMeans(
+            n_clusters=n_colors,
+            random_state=42,
+            n_init=15,
+            max_iter=500,
+        )
+        # Weight samples by superpixel size for better cluster balance
+        sample_weights = seg_sizes.astype(np.float64)
+        kmeans.fit(seg_colors_lab, sample_weight=sample_weights)
 
-    # Subsample for K-Means fitting speed
-    n_pixels = len(pixels_lab)
-    max_samples = 150_000
-    if n_pixels > max_samples:
-        rng = np.random.RandomState(42)
-        sample_idx = rng.choice(n_pixels, max_samples, replace=False)
-        sample = pixels_lab[sample_idx]
+        # Assign each superpixel to its cluster
+        seg_labels = kmeans.predict(seg_colors_lab)
+
+        # Map back to pixel-level labels
+        labels = seg_labels[segments]
+
+        # Convert centers to RGB
+        centers_lab = kmeans.cluster_centers_.astype(np.uint8)
+        centers_rgb = cv2.cvtColor(
+            centers_lab.reshape(1, -1, 3), cv2.COLOR_LAB2RGB
+        ).reshape(-1, 3)
     else:
-        sample = pixels_lab
+        # Fallback: raw pixel clustering (original behavior)
+        img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        pixels_lab = img_lab.reshape(-1, 3)
 
-    # Full KMeans with many inits for best clusters
-    kmeans = KMeans(
-        n_clusters=n_colors,
-        random_state=42,
-        n_init=15,
-        max_iter=500,
-    )
-    kmeans.fit(sample)
+        n_pixels = len(pixels_lab)
+        max_samples = 150_000
+        if n_pixels > max_samples:
+            rng = np.random.RandomState(42)
+            sample_idx = rng.choice(n_pixels, max_samples, replace=False)
+            sample = pixels_lab[sample_idx]
+        else:
+            sample = pixels_lab
 
-    # Predict all pixels
-    labels = kmeans.predict(pixels_lab).reshape(h, w)
+        kmeans = KMeans(
+            n_clusters=n_colors,
+            random_state=42,
+            n_init=15,
+            max_iter=500,
+        )
+        kmeans.fit(sample)
+        labels = kmeans.predict(pixels_lab).reshape(h, w)
 
-    # Convert centers to RGB
-    centers_lab = kmeans.cluster_centers_.astype(np.uint8)
-    centers_rgb = cv2.cvtColor(
-        centers_lab.reshape(1, -1, 3), cv2.COLOR_LAB2RGB
-    ).reshape(-1, 3)
+        centers_lab = kmeans.cluster_centers_.astype(np.uint8)
+        centers_rgb = cv2.cvtColor(
+            centers_lab.reshape(1, -1, 3), cv2.COLOR_LAB2RGB
+        ).reshape(-1, 3)
 
     quantized = centers_rgb[labels.flatten()].reshape(h, w, 3).astype(np.uint8)
 
@@ -228,71 +300,97 @@ def quantize_colors(
 # ──────────────────────────────────────────────
 
 def quantize_to_yarn_palette(
-    img_rgb: np.ndarray, n_colors: int = 8
+    img_rgb: np.ndarray, n_colors: int = 8,
+    segments: np.ndarray = None, seg_colors_lab: np.ndarray = None,
+    seg_sizes: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
     """
-    Map every pixel to the nearest color in the yarn palette,
+    Map every superpixel (or pixel) to the nearest color in the yarn palette,
     then select the top N most-used yarn colors.
-
-    Returns:
-        quantized: RGB image with yarn palette colors
-        palette_rgb: array of (n_colors, 3) — selected yarn colors
-        labels: 2D label map (0..n_colors-1)
-        color_names: list of yarn color names
+    When superpixels provided, matches on superpixel averages for cleaner regions.
     """
     h, w = img_rgb.shape[:2]
-    pixels = img_rgb.reshape(-1, 3).astype(np.float32)
-
-    # Convert both to LAB for perceptually accurate matching
-    img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-    pixels_lab = img_lab.reshape(-1, 3)
 
     yarn_rgb_f = YARN_PALETTE_RGB.astype(np.float32)
     yarn_lab = cv2.cvtColor(
         yarn_rgb_f.reshape(1, -1, 3).astype(np.uint8), cv2.COLOR_RGB2LAB
     ).astype(np.float32).reshape(-1, 3)
-
-    # Find nearest yarn color for every pixel (in LAB space)
-    # Compute pairwise distances in batches to avoid memory blowup
-    n_pixels = len(pixels_lab)
     n_yarn = len(yarn_lab)
-    batch_size = 50_000
-    yarn_indices = np.zeros(n_pixels, dtype=np.int32)
 
-    for start in range(0, n_pixels, batch_size):
-        end = min(start + batch_size, n_pixels)
-        batch = pixels_lab[start:end]
-        # (batch, 1, 3) - (1, n_yarn, 3) → (batch, n_yarn)
-        dists = np.linalg.norm(
-            batch[:, np.newaxis, :] - yarn_lab[np.newaxis, :, :], axis=2
-        )
-        yarn_indices[start:end] = dists.argmin(axis=1)
+    if segments is not None and seg_colors_lab is not None and seg_sizes is not None:
+        n_segs = len(seg_colors_lab)
 
-    # Count usage per yarn color
-    yarn_counts = np.bincount(yarn_indices, minlength=n_yarn)
+        # Map each superpixel to nearest yarn color
+        batch_size = 5000
+        seg_yarn_indices = np.zeros(n_segs, dtype=np.int32)
+        for start in range(0, n_segs, batch_size):
+            end = min(start + batch_size, n_segs)
+            batch = seg_colors_lab[start:end]
+            dists = np.linalg.norm(
+                batch[:, np.newaxis, :] - yarn_lab[np.newaxis, :, :], axis=2
+            )
+            seg_yarn_indices[start:end] = dists.argmin(axis=1)
 
-    # Select top N most used yarn colors
-    top_n_yarn_idx = np.argsort(yarn_counts)[::-1][:n_colors]
-    top_n_yarn_idx = np.sort(top_n_yarn_idx)  # sort back for consistency
+        # Count usage per yarn color (weighted by superpixel area)
+        yarn_counts = np.zeros(n_yarn, dtype=np.int64)
+        np.add.at(yarn_counts, seg_yarn_indices, seg_sizes)
 
-    # Build mapping: yarn_index → new label (0..n_colors-1)
-    # For pixels mapped to non-selected yarn colors, remap to nearest selected
-    selected_lab = yarn_lab[top_n_yarn_idx]
-    selected_rgb = YARN_PALETTE_RGB[top_n_yarn_idx]
-    selected_names = [YARN_PALETTE_NAMES[i] for i in top_n_yarn_idx]
+        # Select top N
+        top_n_yarn_idx = np.argsort(yarn_counts)[::-1][:n_colors]
+        top_n_yarn_idx = np.sort(top_n_yarn_idx)
 
-    # Remap all pixels to the selected subset
-    labels = np.zeros(n_pixels, dtype=np.int32)
-    for start in range(0, n_pixels, batch_size):
-        end = min(start + batch_size, n_pixels)
-        batch = pixels_lab[start:end]
-        dists = np.linalg.norm(
-            batch[:, np.newaxis, :] - selected_lab[np.newaxis, :, :], axis=2
-        )
-        labels[start:end] = dists.argmin(axis=1)
+        selected_lab = yarn_lab[top_n_yarn_idx]
+        selected_rgb = YARN_PALETTE_RGB[top_n_yarn_idx]
+        selected_names = [YARN_PALETTE_NAMES[i] for i in top_n_yarn_idx]
 
-    labels_2d = labels.reshape(h, w)
-    quantized = selected_rgb[labels].reshape(h, w, 3).astype(np.uint8)
+        # Remap each superpixel to nearest selected yarn color
+        seg_labels = np.zeros(n_segs, dtype=np.int32)
+        for start in range(0, n_segs, batch_size):
+            end = min(start + batch_size, n_segs)
+            batch = seg_colors_lab[start:end]
+            dists = np.linalg.norm(
+                batch[:, np.newaxis, :] - selected_lab[np.newaxis, :, :], axis=2
+            )
+            seg_labels[start:end] = dists.argmin(axis=1)
+
+        # Map back to pixel labels
+        labels_2d = seg_labels[segments]
+        quantized = selected_rgb[labels_2d.ravel()].reshape(h, w, 3).astype(np.uint8)
+    else:
+        # Fallback: per-pixel matching (original behavior)
+        img_lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+        pixels_lab = img_lab.reshape(-1, 3)
+        n_pixels = len(pixels_lab)
+        batch_size = 50_000
+        yarn_indices = np.zeros(n_pixels, dtype=np.int32)
+
+        for start in range(0, n_pixels, batch_size):
+            end = min(start + batch_size, n_pixels)
+            batch = pixels_lab[start:end]
+            dists = np.linalg.norm(
+                batch[:, np.newaxis, :] - yarn_lab[np.newaxis, :, :], axis=2
+            )
+            yarn_indices[start:end] = dists.argmin(axis=1)
+
+        yarn_counts = np.bincount(yarn_indices, minlength=n_yarn)
+        top_n_yarn_idx = np.argsort(yarn_counts)[::-1][:n_colors]
+        top_n_yarn_idx = np.sort(top_n_yarn_idx)
+
+        selected_lab = yarn_lab[top_n_yarn_idx]
+        selected_rgb = YARN_PALETTE_RGB[top_n_yarn_idx]
+        selected_names = [YARN_PALETTE_NAMES[i] for i in top_n_yarn_idx]
+
+        labels = np.zeros(n_pixels, dtype=np.int32)
+        for start in range(0, n_pixels, batch_size):
+            end = min(start + batch_size, n_pixels)
+            batch = pixels_lab[start:end]
+            dists = np.linalg.norm(
+                batch[:, np.newaxis, :] - selected_lab[np.newaxis, :, :], axis=2
+            )
+            labels[start:end] = dists.argmin(axis=1)
+
+        labels_2d = labels.reshape(h, w)
+        quantized = selected_rgb[labels].reshape(h, w, 3).astype(np.uint8)
 
     return quantized, selected_rgb, labels_2d, selected_names
 
