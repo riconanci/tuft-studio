@@ -8,6 +8,7 @@ export function EditorCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const project = useProjectStore((s) => s.project);
   const processingStatus = useProjectStore((s) => s.processingStatus);
+  const processingError = useProjectStore((s) => s.processingError);
   const hiddenColorIds = useProjectStore((s) => s.hiddenColorIds);
   const showOutline = useProjectStore((s) => s.showOutline);
   const toggleOutline = useProjectStore((s) => s.toggleOutline);
@@ -16,13 +17,26 @@ export function EditorCanvas() {
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const [showRaw, setShowRaw] = useState(false);
 
-  // Outline image cache — keyed on actual SVG content hash + width
+  // Zoom & pan state
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const isPanningRef = useRef(false);
+  const lastMouseRef = useRef({ x: 0, y: 0 });
+
+  // Outline image cache
   const outlineImgRef = useRef<HTMLImageElement | null>(null);
-  // Counter to force re-render when outline image finishes loading
   const [outlineReady, setOutlineReady] = useState(0);
 
   const hasProcessed = !!project?.processedImage;
   const hasOutline = !!project?.outlineSvg;
+
+  // Reset zoom/pan when image changes
+  useEffect(() => {
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+  }, [project?.processedImage, project?.originalImage]);
 
   // Track container size
   useEffect(() => {
@@ -38,6 +52,34 @@ export function EditorCanvas() {
     return () => observer.disconnect();
   }, []);
 
+  // Wheel to zoom
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    setZoom((z) => Math.min(Math.max(z * delta, 0.25), 10));
+  }, []);
+
+  // Mouse drag to pan
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0) {
+      isPanningRef.current = true;
+      lastMouseRef.current = { x: e.clientX, y: e.clientY };
+    }
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isPanningRef.current) return;
+    const dx = e.clientX - lastMouseRef.current.x;
+    const dy = e.clientY - lastMouseRef.current.y;
+    lastMouseRef.current = { x: e.clientX, y: e.clientY };
+    setPanX((p) => p + dx);
+    setPanY((p) => p + dy);
+  }, []);
+
+  const handleMouseUp = useCallback(() => {
+    isPanningRef.current = false;
+  }, []);
+
   // Build outline image when SVG or line width changes
   useEffect(() => {
     if (!project?.outlineSvg) {
@@ -45,7 +87,6 @@ export function EditorCanvas() {
       return;
     }
 
-    // Replace stroke-width in the SVG
     const modifiedSvg = project.outlineSvg.replace(
       /stroke-width="[^"]*"/,
       `stroke-width="${outlineWidth}"`
@@ -57,7 +98,6 @@ export function EditorCanvas() {
     img.onload = () => {
       outlineImgRef.current = img;
       URL.revokeObjectURL(url);
-      // Bump counter to trigger canvas re-render
       setOutlineReady((n) => n + 1);
     };
     img.onerror = () => {
@@ -87,7 +127,8 @@ export function EditorCanvas() {
 
       if (availW <= 0 || availH <= 0) return;
 
-      const scale = Math.min(availW / img.width, availH / img.height, 1);
+      const baseScale = Math.min(availW / img.width, availH / img.height, 1);
+      const scale = baseScale * zoom;
       const drawW = img.width * scale;
       const drawH = img.height * scale;
 
@@ -97,8 +138,8 @@ export function EditorCanvas() {
       ctx.fillStyle = '#0A0A0A';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      const offX = (containerSize.w - drawW) / 2;
-      const offY = (containerSize.h - drawH) / 2;
+      const offX = (containerSize.w - drawW) / 2 + panX;
+      const offY = (containerSize.h - drawH) / 2 + panY;
 
       drawCheckerboard(ctx, offX, offY, drawW, drawH);
 
@@ -112,24 +153,34 @@ export function EditorCanvas() {
           .map((c) => c.rgb);
 
         if (hiddenRgbs.length > 0) {
-          const imageData = ctx.getImageData(offX, offY, drawW, drawH);
-          const data = imageData.data;
-          const tol = 12;
+          // Clamp getImageData to canvas bounds
+          const sx = Math.max(0, Math.floor(offX));
+          const sy = Math.max(0, Math.floor(offY));
+          const ex = Math.min(canvas.width, Math.ceil(offX + drawW));
+          const ey = Math.min(canvas.height, Math.ceil(offY + drawH));
+          const sw = ex - sx;
+          const sh = ey - sy;
 
-          for (let i = 0; i < data.length; i += 4) {
-            const r = data[i], g = data[i + 1], b = data[i + 2];
-            for (const [hr, hg, hb] of hiddenRgbs) {
-              if (
-                Math.abs(r - hr) <= tol &&
-                Math.abs(g - hg) <= tol &&
-                Math.abs(b - hb) <= tol
-              ) {
-                data[i + 3] = 0;
-                break;
+          if (sw > 0 && sh > 0) {
+            const imageData = ctx.getImageData(sx, sy, sw, sh);
+            const data = imageData.data;
+            const tol = 12;
+
+            for (let i = 0; i < data.length; i += 4) {
+              const r = data[i], g = data[i + 1], b = data[i + 2];
+              for (const [hr, hg, hb] of hiddenRgbs) {
+                if (
+                  Math.abs(r - hr) <= tol &&
+                  Math.abs(g - hg) <= tol &&
+                  Math.abs(b - hb) <= tol
+                ) {
+                  data[i + 3] = 0;
+                  break;
+                }
               }
             }
+            ctx.putImageData(imageData, sx, sy);
           }
-          ctx.putImageData(imageData, offX, offY);
         }
       }
 
@@ -144,11 +195,35 @@ export function EditorCanvas() {
       ctx.strokeRect(offX - 0.5, offY - 0.5, drawW + 1, drawH + 1);
     };
     img.src = imageSource;
-  }, [project, containerSize, hiddenColorIds, showRaw, showOutline, outlineReady]);
+  }, [project, containerSize, hiddenColorIds, showRaw, showOutline, outlineReady, zoom, panX, panY]);
 
   return (
-    <div ref={containerRef} className="absolute inset-0">
+    <div
+      ref={containerRef}
+      className="absolute inset-0"
+      onWheel={handleWheel}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      style={{ cursor: isPanningRef.current ? 'grabbing' : 'grab' }}
+    >
       <canvas ref={canvasRef} className="w-full h-full" />
+
+      {/* Zoom indicator */}
+      {zoom !== 1 && (
+        <div className="absolute bottom-3 right-3 flex items-center gap-2">
+          <span className="font-mono text-2xs text-tuft-text-dim bg-tuft-surface/90 border border-tuft-border rounded px-2 py-1 backdrop-blur-sm">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            onClick={() => { setZoom(1); setPanX(0); setPanY(0); }}
+            className="font-mono text-2xs text-tuft-text-dim bg-tuft-surface/90 border border-tuft-border rounded px-2 py-1 backdrop-blur-sm hover:text-tuft-text"
+          >
+            Reset
+          </button>
+        </div>
+      )}
 
       {/* Top-left controls */}
       {hasProcessed && (
@@ -227,6 +302,26 @@ export function EditorCanvas() {
             <span className="font-mono text-xs text-tuft-text-muted">
               Processing pattern…
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {processingStatus === 'error' && processingError && (
+        <div className="absolute inset-0 flex items-center justify-center bg-tuft-bg/80 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 max-w-sm px-4 text-center">
+            <div className="w-8 h-8 rounded-full border-2 border-red-500/50 flex items-center justify-center">
+              <span className="text-red-400 text-sm">!</span>
+            </div>
+            <span className="font-mono text-xs text-red-400">
+              {processingError}
+            </span>
+            <button
+              onClick={() => useProjectStore.getState().setProcessingStatus('idle')}
+              className="font-mono text-2xs text-tuft-text-dim hover:text-tuft-text border border-tuft-border rounded px-3 py-1.5"
+            >
+              Dismiss
+            </button>
           </div>
         </div>
       )}

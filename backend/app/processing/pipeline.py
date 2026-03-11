@@ -26,6 +26,10 @@ from skimage.segmentation import slic
 from app.models.schemas import (
     ProcessRequest,
     ProcessResponse,
+    PreviewRequest,
+    PreviewResponse,
+    AnalyzeRequest,
+    AnalyzeResponse,
     TuftColor,
     Layer,
     YarnEstimate,
@@ -108,6 +112,90 @@ def process_image(request: ProcessRequest) -> ProcessResponse:
         yarnEstimates=yarn_estimates,
         outlineSvg=outline_svg,
     )
+
+
+# ──────────────────────────────────────────────
+# Fast Preview (low-res, skip cleanup)
+# ──────────────────────────────────────────────
+
+def preview_image(request: PreviewRequest) -> PreviewResponse:
+    """Fast low-res preview — quantize only, skip cleanup/thickness/contour."""
+    img_rgb = decode_and_normalize(request.image)
+
+    # Aggressive downscale for speed (max 400px)
+    img_rgb = limit_resolution(img_rgb, max_dim=400)
+
+    # Light smoothing
+    smoothed = cv2.medianBlur(img_rgb, 5)
+    smoothed = cv2.bilateralFilter(smoothed, d=7, sigmaColor=60, sigmaSpace=60)
+
+    # Superpixels (fewer segments for speed)
+    segments, seg_colors_lab, seg_sizes = compute_superpixels(smoothed, n_segments=400, compactness=15.0)
+
+    # Quantize
+    if request.useYarnPalette:
+        quantized, _, _, _ = quantize_to_yarn_palette(
+            smoothed, n_colors=request.paletteSize,
+            segments=segments, seg_colors_lab=seg_colors_lab, seg_sizes=seg_sizes
+        )
+    else:
+        quantized, _, _ = quantize_colors(
+            smoothed, n_colors=request.paletteSize,
+            segments=segments, seg_colors_lab=seg_colors_lab, seg_sizes=seg_sizes
+        )
+
+    return PreviewResponse(previewImage=encode_image(quantized))
+
+
+# ──────────────────────────────────────────────
+# Color Count Analysis (elbow method)
+# ──────────────────────────────────────────────
+
+def analyze_colors(request: AnalyzeRequest) -> AnalyzeResponse:
+    """Analyze image to suggest optimal color count using elbow method."""
+    img_rgb = decode_and_normalize(request.image)
+
+    # Tiny for speed (max 200px)
+    img_rgb = limit_resolution(img_rgb, max_dim=200)
+
+    # Light smoothing
+    smoothed = cv2.medianBlur(img_rgb, 5)
+
+    # Convert to LAB
+    img_lab = cv2.cvtColor(smoothed, cv2.COLOR_RGB2LAB).astype(np.float32)
+    pixels_lab = img_lab.reshape(-1, 3)
+
+    # Subsample if needed
+    if len(pixels_lab) > 20_000:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(len(pixels_lab), 20_000, replace=False)
+        pixels_lab = pixels_lab[idx]
+
+    # Run K-Means for K=3..12 and record inertia
+    k_range = list(range(3, 13))
+    inertias = []
+    for k in k_range:
+        km = KMeans(n_clusters=k, random_state=42, n_init=5, max_iter=200)
+        km.fit(pixels_lab)
+        inertias.append(float(km.inertia_))
+
+    # Elbow detection: find K where second derivative is largest
+    # (i.e. the sharpest bend in the curve)
+    suggested = 8  # default
+    if len(inertias) >= 3:
+        # Normalize inertias to 0-1 for stable comparison
+        max_i = max(inertias) if max(inertias) > 0 else 1
+        norm = [i / max_i for i in inertias]
+
+        # Second derivative
+        best_score = 0
+        for i in range(1, len(norm) - 1):
+            second_deriv = norm[i - 1] - 2 * norm[i] + norm[i + 1]
+            if second_deriv > best_score:
+                best_score = second_deriv
+                suggested = k_range[i]
+
+    return AnalyzeResponse(suggestedColors=suggested, scores=inertias)
 
 
 # ──────────────────────────────────────────────

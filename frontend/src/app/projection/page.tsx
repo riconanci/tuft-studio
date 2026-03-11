@@ -22,6 +22,8 @@ export default function ProjectionPage() {
   const [soloIndex, setSoloIndex] = useState(-1); // -1 = all colors
   const [showControls, setShowControls] = useState(true);
   const [showGuides, setShowGuides] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
+  const [gridSizeInches, setGridSizeInches] = useState(2);
   const [showRaw, setShowRaw] = useState(false);
   const [outlineColor, setOutlineColor] = useState<'white' | 'black'>('white');
   const [outlineReady, setOutlineReady] = useState(0);
@@ -298,9 +300,43 @@ export default function ProjectionPage() {
 
         ctx.globalAlpha = 1;
       }
+
+      // Grid overlay — based on rug dimensions
+      if (showGrid && project.width && project.height) {
+        const rugW = project.unit === 'cm' ? project.width / 2.54 : project.width;
+        const rugH = project.unit === 'cm' ? project.height / 2.54 : project.height;
+        const pxPerInchX = drawW / rugW;
+        const pxPerInchY = drawH / rugH;
+        const stepX = pxPerInchX * gridSizeInches;
+        const stepY = pxPerInchY * gridSizeInches;
+
+        ctx.globalAlpha = 0.25;
+        ctx.strokeStyle = '#D4FF00';
+        ctx.lineWidth = 0.5;
+        ctx.setLineDash([4, 4]);
+
+        // Vertical lines
+        for (let x = stepX; x < drawW; x += stepX) {
+          ctx.beginPath();
+          ctx.moveTo(offX + x, offY);
+          ctx.lineTo(offX + x, offY + drawH);
+          ctx.stroke();
+        }
+
+        // Horizontal lines
+        for (let y = stepY; y < drawH; y += stepY) {
+          ctx.beginPath();
+          ctx.moveTo(offX, offY + y);
+          ctx.lineTo(offX + drawW, offY + y);
+          ctx.stroke();
+        }
+
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
     };
     img.src = imageSource;
-  }, [project, mirrored, viewMode, patternOpacity, soloColor, outlineWidth, outlineReady, showGuides, showRaw]);
+  }, [project, mirrored, viewMode, patternOpacity, soloColor, outlineWidth, outlineReady, showGuides, showGrid, gridSizeInches, showRaw]);
 
   useEffect(() => {
     render();
@@ -436,6 +472,37 @@ export default function ProjectionPage() {
               >
                 {showGuides ? 'ON' : 'OFF'}
               </button>
+            </div>
+
+            {/* Grid overlay toggle */}
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-2xs text-white/50">Grid</span>
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setShowGrid(!showGrid)}
+                  className={`
+                    px-3 py-1 text-2xs font-mono rounded transition-colors
+                    ${showGrid
+                      ? 'bg-[#D4FF00] text-black'
+                      : 'text-white/50 bg-white/5 hover:text-white/80'
+                    }
+                  `}
+                >
+                  {showGrid ? 'ON' : 'OFF'}
+                </button>
+                {showGrid && (
+                  <select
+                    value={gridSizeInches}
+                    onChange={(e) => setGridSizeInches(Number(e.target.value))}
+                    className="bg-white/10 text-white/70 text-2xs font-mono rounded px-1 py-1 border-0 outline-none"
+                  >
+                    <option value={1}>1&quot;</option>
+                    <option value={2}>2&quot;</option>
+                    <option value={3}>3&quot;</option>
+                    <option value={4}>4&quot;</option>
+                  </select>
+                )}
+              </div>
             </div>
 
             {/* Pattern opacity */}

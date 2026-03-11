@@ -39,3 +39,23 @@ class ProcessResponse(BaseModel):
     layers: list[Layer]
     yarnEstimates: list[YarnEstimate]
     outlineSvg: str = ""
+
+
+class PreviewRequest(BaseModel):
+    image: str  # base64 encoded
+    paletteSize: int = 8
+    useYarnPalette: bool = False
+
+
+class PreviewResponse(BaseModel):
+    previewImage: str  # base64 PNG (low-res)
+
+
+class AnalyzeRequest(BaseModel):
+    image: str  # base64 encoded
+    useYarnPalette: bool = False
+
+
+class AnalyzeResponse(BaseModel):
+    suggestedColors: int
+    scores: list[float]  # inertia per K value (3..12)

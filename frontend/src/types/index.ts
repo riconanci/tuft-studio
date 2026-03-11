@@ -59,6 +59,15 @@ export interface ProcessResponse {
   outlineSvg: string;
 }
 
+export interface PreviewResponse {
+  previewImage: string; // base64
+}
+
+export interface AnalyzeResponse {
+  suggestedColors: number;
+  scores: number[];
+}
+
 // UI state types
 
 export type EditorTab = 'palette' | 'settings' | 'export';
