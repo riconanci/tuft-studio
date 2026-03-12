@@ -55,14 +55,16 @@ class ApiClient {
   async previewImage(
     image: string,
     paletteSize: number,
-    useYarnPalette: boolean
+    useYarnPalette: boolean,
+    minThickness: number = 5,
+    regionThreshold: number = 0.005
   ): Promise<PreviewResponse> {
     const response = await this.fetchWithTimeout(
       `${this.baseUrl}/api/preview`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image, paletteSize, useYarnPalette }),
+        body: JSON.stringify({ image, paletteSize, useYarnPalette, minThickness, regionThreshold }),
       },
       15000 // 15s for preview
     );

@@ -47,6 +47,8 @@ class PreviewRequest(BaseModel):
     image: str  # base64 encoded
     paletteSize: int = 8
     useYarnPalette: bool = False
+    minThickness: float = 5.0
+    regionThreshold: float = 0.005
 
 
 class PreviewResponse(BaseModel):

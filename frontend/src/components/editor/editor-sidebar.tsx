@@ -103,6 +103,15 @@ export function EditorSidebar() {
 
   const tabContent = (
     <>
+      {activeTab === 'settings' && <SettingsPanel onApply={() => setDrawerHeight(SNAP_CLOSED)} />}
+      {activeTab === 'palette' && <PalettePanel />}
+      {activeTab === 'export' && <ExportPanel />}
+    </>
+  );
+
+  // Desktop tab content (no drawer to close)
+  const desktopTabContent = (
+    <>
       {activeTab === 'settings' && <SettingsPanel />}
       {activeTab === 'palette' && <PalettePanel />}
       {activeTab === 'export' && <ExportPanel />}
@@ -156,7 +165,7 @@ export function EditorSidebar() {
           ))}
         </div>
         <div className="flex-1 overflow-y-auto p-4">
-          {tabContent}
+          {desktopTabContent}
         </div>
       </aside>
 

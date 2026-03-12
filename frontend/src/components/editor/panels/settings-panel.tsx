@@ -7,7 +7,7 @@ import { stripDataUrlPrefix } from '@/lib/image-utils';
 
 const PALETTE_OPTIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 16];
 
-export function SettingsPanel() {
+export function SettingsPanel({ onApply }: { onApply?: () => void }) {
   const project = useProjectStore((s) => s.project);
   const updateSettings = useProjectStore((s) => s.updateSettings);
   const setProcessedResult = useProjectStore((s) => s.setProcessedResult);
@@ -58,7 +58,9 @@ export function SettingsPanel() {
         const result = await api.previewImage(
           stripDataUrlPrefix(project.originalImage),
           project.paletteSize,
-          project.useYarnPalette
+          project.useYarnPalette,
+          project.minThickness,
+          project.regionThreshold
         );
         setPreviewSrc(`data:image/png;base64,${result.previewImage}`);
       } catch {
@@ -75,11 +77,11 @@ export function SettingsPanel() {
     return () => {
       if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
     };
-  }, [project?.paletteSize, project?.useYarnPalette]);
+  }, [project?.paletteSize, project?.useYarnPalette, project?.minThickness, project?.regionThreshold]);
 
   const handleApply = async () => {
     setProcessingStatus('processing');
-    setActiveTab('palette');
+    onApply?.();
     setPreviewSrc(null);
 
     try {

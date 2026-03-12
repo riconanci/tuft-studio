@@ -123,7 +123,7 @@ def process_image(request: ProcessRequest) -> ProcessResponse:
 # ──────────────────────────────────────────────
 
 def preview_image(request: PreviewRequest) -> PreviewResponse:
-    """Fast low-res preview — quantize only, skip cleanup/thickness/contour."""
+    """Fast low-res preview — quantize + light cleanup, skip thickness/contour."""
     img_rgb = decode_and_normalize(request.image)
 
     # Aggressive downscale for speed (max 400px)
@@ -138,15 +138,23 @@ def preview_image(request: PreviewRequest) -> PreviewResponse:
 
     # Quantize
     if request.useYarnPalette:
-        quantized, _, _, _ = quantize_to_yarn_palette(
+        quantized, palette_rgb, labels, _ = quantize_to_yarn_palette(
             smoothed, n_colors=request.paletteSize,
             segments=segments, seg_colors_lab=seg_colors_lab, seg_sizes=seg_sizes
         )
     else:
-        quantized, _, _ = quantize_colors(
+        quantized, palette_rgb, labels = quantize_colors(
             smoothed, n_colors=request.paletteSize,
             segments=segments, seg_colors_lab=seg_colors_lab, seg_sizes=seg_sizes
         )
+
+    # Light cleanup (2 passes instead of 4)
+    for _ in range(2):
+        labels = cleanup_small_regions(labels, threshold_ratio=request.regionThreshold)
+
+    # Rebuild image from cleaned labels
+    h, w = labels.shape
+    quantized = palette_rgb[labels.flatten()].reshape(h, w, 3).astype(np.uint8)
 
     return PreviewResponse(previewImage=encode_image(quantized))
 
